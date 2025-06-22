@@ -20,7 +20,11 @@ const uploads = multer({ dest: 'uploads/' });
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: "*"
+  }
+});
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -65,13 +69,25 @@ app.get('/qr', (req, res) => {
   if (!session || !SESSIONS.includes(session)) {
     return res.status(400).send('Sessão inválida');
   }
-  res.send(`<html><body><script>
-    const socket = io();
-    socket.emit('join', '${session}');
-    socket.on('qr', qr => {
-      document.body.innerHTML = '<img src="' + qr + '">';
-    });
-  </script></body></html>`);
+  res.send(`
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <title>QR Code - ${session}</title>
+        <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+      </head>
+      <body style="background-color:#000; display:flex; justify-content:center; align-items:center; height:100vh;">
+        <div id="qr-container" style="color:white; font-family:sans-serif">Aguardando QR...</div>
+        <script>
+          const socket = io("https://whatsapp-api-uylw.onrender.com");
+          socket.emit('join', '${session}');
+          socket.on('qr', qr => {
+            document.getElementById('qr-container').innerHTML = '<img src="' + qr + '" />';
+          });
+        </script>
+      </body>
+    </html>
+  `);
 });
 
 app.post('/upload', uploads.single('file'), (req, res) => {
