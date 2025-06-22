@@ -19,6 +19,8 @@ const PORT = process.env.PORT || 3000;
 let sock = null;
 let isReady = false;
 let qrCodeBase64 = null;
+let disparoFila = [];
+let emDisparo = false;
 const NUMBERS_FILE = 'numbers.json';
 let numbers = [];
 const upload = multer({ dest: 'uploads/' });
@@ -49,22 +51,43 @@ function sanitizeNumber(num) {
   return num;
 }
 
-function getAllFiles(dir, base = dir) {
-  const result = {};
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      Object.assign(result, getAllFiles(full, base));
-    } else {
-      try {
-        const rel = path.relative(base, full);
-        result[rel] = fs.readFileSync(full, 'utf8');
-      } catch (err) {
-        result[rel] = '[binary]';
+async function executarDisparo(numeros, mensagens) {
+  if (emDisparo || !Array.isArray(numeros) || !Array.isArray(mensagens)) return;
+  emDisparo = true;
+  const delayMin = 60_000;
+  const delayMax = 125_000;
+  const total = numeros.length;
+  const estimativa = new Date(Date.now() + ((delayMin + delayMax) / 2 * total));
+  broadcast({ event: 'inicio', total, previsao_fim: estimativa.toLocaleTimeString() });
+
+  for (let i = 0; i < total; i++) {
+    const numeroOriginal = numeros[i];
+    const numero = sanitizeNumber(numeroOriginal);
+    const mensagem = mensagens[Math.floor(Math.random() * mensagens.length)];
+    let enviado = false;
+
+    while (!enviado) {
+      if (sock && isReady) {
+        try {
+          await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensagem });
+          enviado = true;
+          broadcast({ event: 'enviado', numero, mensagem, progresso: Math.floor(((i + 1) / total) * 100) });
+        } catch (err) {
+          broadcast({ event: 'erro', numero, message: err.message });
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      } else {
+        await new Promise(r => setTimeout(r, 5000));
       }
     }
+
+    const delay = Math.floor(Math.random() * (delayMax - delayMin + 1)) + delayMin;
+    broadcast({ event: 'pausa', message: `Aguardando ${Math.floor(delay / 1000)}s...` });
+    await new Promise(r => setTimeout(r, delay));
   }
-  return result;
+
+  broadcast({ event: 'concluido', total });
+  emDisparo = false;
 }
 
 app.use(express.json());
@@ -90,43 +113,12 @@ app.post('/disparos', async (req, res) => {
   if (!Array.isArray(numeros) || !Array.isArray(mensagens)) {
     return res.status(400).send('Formato inválido');
   }
-  if (!sock || !isReady) {
-    return res.status(500).send('Sessão WhatsApp não está conectada');
-  }
   if (numeros.length > 600) {
     return res.status(400).send('O limite é 600 números');
   }
-  const delayMin = 60_000;
-  const delayMax = 125_000;
-
-  const total = numeros.length;
-  const estimativa = new Date(Date.now() + ((delayMin + delayMax) / 2 * total));
-  broadcast({ event: 'inicio', total, previsao_fim: estimativa.toLocaleTimeString() });
-
-  for (let i = 0; i < total; i++) {
-    const numeroOriginal = numeros[i];
-    const numero = sanitizeNumber(numeroOriginal);
-    const mensagem = mensagens[Math.floor(Math.random() * mensagens.length)];
-
-    if (!sock || !isReady) {
-      broadcast({ event: 'erro', numero, message: 'Sessão não está ativa' });
-      break;
-    }
-
-    try {
-      await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensagem });
-      broadcast({ event: 'enviado', numero, mensagem, progresso: Math.floor(((i + 1) / total) * 100) });
-    } catch (err) {
-      broadcast({ event: 'erro', numero, message: err.message });
-    }
-
-    const delay = Math.floor(Math.random() * (delayMax - delayMin + 1)) + delayMin;
-    broadcast({ event: 'pausa', message: `Aguardando ${Math.floor(delay / 1000)}s...` });
-    await new Promise(r => setTimeout(r, delay));
-  }
-
-  broadcast({ event: 'concluido', total });
-  res.send('Disparo iniciado');
+  disparoFila.push({ numeros, mensagens });
+  if (!emDisparo) executarDisparo(numeros, mensagens);
+  res.send('Disparo programado');
 });
 
 app.get('/painel', (_, res) => {
