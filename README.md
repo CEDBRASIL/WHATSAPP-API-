@@ -6,6 +6,7 @@ Servidor Node.js para envio de mensagens via WhatsApp usando Baileys.
 
 - `GET /status` - verifica se o bot está conectado.
 - `POST /connect` - inicia a conexão se não estiver conectado.
+- `GET /connect` - exibe o QR Code e confirma quando a conexão estiver ativa.
 - `GET /qr` - exibe o QR Code para autenticação.
 - `POST /add-number` - adiciona um número individual (`{ "numero": "5511999999999" }`).
 - `POST /upload-numbers` - envia arquivo `.xlsx` ou `.csv` com coluna `numero` ou `number` contendo os números.

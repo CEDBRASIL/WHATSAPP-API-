@@ -66,6 +66,15 @@ app.post('/connect', (_, res) => {
   res.send('Iniciando conexão');
 });
 
+app.get('/connect', (_, res) => {
+  if (qrCodeBase64) {
+    return res.send(
+      `<html><body><img src="${qrCodeBase64}" alt="QR Code" /></body></html>`
+    );
+  }
+  res.send('Conectado com sucesso');
+});
+
 app.get('/numbers', (_, res) => {
   res.json(numbers);
 });
