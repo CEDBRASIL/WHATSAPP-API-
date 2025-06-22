@@ -1,3 +1,5 @@
+// index.js (com WebSocket de status em tempo real)
+
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
@@ -8,202 +10,123 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const xlsx = require('xlsx');
 const path = require('path');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 3000;
+
 let sock = null;
 let qrCodeBase64 = null;
-const NUMBERS_FILE = 'numbers.json';
-let numbers = [];
 const upload = multer({ dest: 'uploads/' });
 
-function loadNumbers() {
-  if (fs.existsSync(NUMBERS_FILE)) {
-    numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
-  }
-}
-
-function saveNumbers() {
-  fs.writeFileSync(NUMBERS_FILE, JSON.stringify(numbers, null, 2));
-}
-
-function getAllFiles(dir, base = dir) {
-  const result = {};
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      Object.assign(result, getAllFiles(full, base));
-    } else {
-      try {
-        const rel = path.relative(base, full);
-        result[rel] = fs.readFileSync(full, 'utf8');
-      } catch (err) {
-        result[rel] = '[binary]';
-      }
-    }
-  }
-  return result;
-}
-
-
-
 app.use(express.json());
-loadNumbers();
 
-app.get('/', (_, res) => {
-  res.send('Bot rodando');
-});
+function broadcast(payload) {
+  const msg = JSON.stringify(payload);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(msg);
+  });
+}
 
-app.get('/status', (_, res) => {
-  res.json({ conectado: !!(sock && sock.user) });
-});
+function corrigirNumero(numero) {
+  if (numero.startsWith('55') && numero.length === 13 && numero[4] === '9') {
+    return numero.slice(0, 4) + numero.slice(5);
+  }
+  return numero;
+}
+
+app.get('/', (_, res) => res.send('Bot rodando'));
+
+app.get('/status', (_, res) => res.json({ conectado: !!(sock && sock.user) }));
 
 app.post('/connect', (_, res) => {
-  if (sock && sock.user) {
-    return res.send('Já conectado');
-  }
+  if (sock && sock.user) return res.send('Já conectado');
   startBot();
   res.send('Iniciando conexão');
 });
 
 app.get('/connect', (_, res) => {
-  if (qrCodeBase64) {
-    return res.send(
-      `<html><body><img src="${qrCodeBase64}" alt="QR Code" /></body></html>`
-    );
-  }
+  if (qrCodeBase64) return res.send(`<html><body><img src="${qrCodeBase64}" alt="QR Code" /></body></html>`);
   res.send('Conectado com sucesso');
 });
 
-app.get('/numbers', (_, res) => {
-  res.json(numbers);
-});
-
-app.get('/info', (_, res) => {
-  const data = getAllFiles(__dirname);
-  res.json(data);
-});
-
-// Lista todos os grupos que o bot participa
-app.get('/grupos', async (_, res) => {
-  if (!sock) return res.status(500).send('Bot não iniciado');
-  try {
-    const grupos = await sock.groupFetchAllParticipating();
-    const lista = Object.values(grupos).map(g => ({ id: g.id, nome: g.subject }));
-    res.json(lista);
-  } catch (err) {
-    console.error('Erro ao listar grupos:', err);
-    res.status(500).send('Erro ao listar grupos');
-  }
-});
-
-// Mostra os integrantes de um grupo específico
-app.get('/grupos/:nome', async (req, res) => {
-  if (!sock) return res.status(500).send('Bot não iniciado');
-  const nome = req.params.nome.toLowerCase();
-  try {
-    const grupos = await sock.groupFetchAllParticipating();
-    const grupo = Object.values(grupos).find(g => g.subject.toLowerCase() === nome);
-    if (!grupo) return res.status(404).send('Grupo não encontrado');
-    const meta = await sock.groupMetadata(grupo.id);
-    const participantes = meta.participants.map(p => ({
-      numero: p.id.split('@')[0],
-      admin: !!p.admin
-    }));
-    res.json({ id: meta.id, nome: meta.subject, participantes });
-  } catch (err) {
-    console.error('Erro ao obter informações do grupo:', err);
-    res.status(500).send('Erro ao obter informações do grupo');
-  }
-});
-
-app.post('/add-number', (req, res) => {
-  const numero = req.body.numero;
-  if (!numero) return res.status(400).send('Número é obrigatório');
-  if (!numbers.includes(numero)) {
-    numbers.push(numero);
-    saveNumbers();
-  }
-  res.send('Número adicionado');
-});
-
-app.post('/upload-numbers', upload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).send('Arquivo é obrigatório');
-  try {
-    if (file.originalname.endsWith('.xlsx') || file.originalname.endsWith('.xls')) {
-      const workbook = xlsx.readFile(file.path);
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const data = xlsx.utils.sheet_to_json(sheet);
-      data.forEach(r => {
-        const n = r.numero || r.number;
-        if (n && !numbers.includes(String(n))) numbers.push(String(n));
-      });
-    } else if (file.originalname.endsWith('.csv')) {
-      const content = fs.readFileSync(file.path);
-      const records = parse(content, { columns: true, skip_empty_lines: true });
-      records.forEach(r => {
-        const n = r.numero || r.number;
-        if (n && !numbers.includes(String(n))) numbers.push(String(n));
-      });
-    } else {
-      fs.unlinkSync(file.path);
-      return res.status(400).send('Formato não suportado');
-    }
-    saveNumbers();
-    fs.unlinkSync(file.path);
-    res.send('Números adicionados');
-  } catch (err) {
-    console.error('Erro ao processar arquivo:', err);
-    res.status(500).send('Erro ao processar arquivo');
-  }
+app.get('/qr', (_, res) => {
+  if (qrCodeBase64) return res.send(`<html><body><img src="${qrCodeBase64}" alt="QR Code" /></body></html>`);
+  res.status(404).send('QR Code não disponível.');
 });
 
 app.post('/disparo', async (req, res) => {
-  const { mensagem, intervalo } = req.body;
-  if (!mensagem) return res.status(400).send('Mensagem é obrigatória');
+  const { mensagens, numeros } = req.body;
+
+  if (!Array.isArray(mensagens) || mensagens.length === 0)
+    return res.status(400).send('Envie um array com mensagens');
+  if (!Array.isArray(numeros) || numeros.length === 0)
+    return res.status(400).send('Envie um array com números');
   if (!sock) return res.status(500).send('Bot não iniciado');
-  const delay = parseInt(intervalo || 1000);
+
+  let lista = numeros.slice(0, 600).map(corrigirNumero).sort(() => 0.5 - Math.random());
+
   (async () => {
-    for (const num of numbers) {
+    for (let i = 0; i < lista.length; i++) {
+      const numero = lista[i];
+      const jid = `${numero}@s.whatsapp.net`;
+      const agora = new Date();
+      const hora = agora.getHours();
+
+      if (hora < 7 || hora >= 22) {
+        broadcast({ event: 'pausa', message: '⏸ Fora do horário. Aguardando 15min...' });
+        await new Promise(r => setTimeout(r, 15 * 60 * 1000));
+        i--;
+        continue;
+      }
+
       try {
-        await sock.sendMessage(`${num}@s.whatsapp.net`, { text: mensagem });
-        await new Promise(r => setTimeout(r, delay));
-      } catch (e) {
-        console.error('Erro ao enviar para', num, e);
+        const chats = await sock.chatRead(jid);
+        if (!chats?.messages?.length) {
+          broadcast({ event: 'pulado', numero });
+          continue;
+        }
+      } catch (err) {
+        broadcast({ event: 'erro', numero, error: err.message });
+      }
+
+      const msg = mensagens[Math.floor(Math.random() * mensagens.length)];
+
+      try {
+        await sock.presenceSubscribe(jid);
+        await new Promise(r => setTimeout(r, 2000));
+
+        const presencas = ['composing', 'recording', 'available'];
+        const presence = presencas[Math.floor(Math.random() * presencas.length)];
+        await sock.sendPresenceUpdate(presence, jid);
+
+        const typingTime = 2000 + Math.floor(Math.random() * 4000);
+        await new Promise(r => setTimeout(r, typingTime));
+
+        await sock.sendPresenceUpdate('paused', jid);
+        await sock.sendMessage(jid, { text: msg });
+
+        broadcast({ event: 'enviado', numero, mensagem: msg, progresso: Math.round(((i + 1) / lista.length) * 100) });
+      } catch (err) {
+        broadcast({ event: 'erro', numero, error: err.message });
+      }
+
+      const delay = 60000 + Math.floor(Math.random() * 65000);
+      await new Promise(r => setTimeout(r, delay));
+
+      if ((i + 1) % 40 === 0) {
+        broadcast({ event: 'pausa', message: '⏸ Pausa de 15 minutos após 40 envios...' });
+        await new Promise(r => setTimeout(r, 15 * 60 * 1000));
       }
     }
+
+    broadcast({ event: 'concluido' });
   })();
-  res.send('Disparo iniciado');
-});
 
-app.get('/qr', (_, res) => {
-  if (qrCodeBase64) {
-    res.send(`<html><body><img src="${qrCodeBase64}" alt="QR Code" /></body></html>`);
-  } else {
-    res.status(404).send('QR Code não disponível.');
-  }
-});
-
-app.get('/send', async (req, res) => {
-  const para = req.query.para;
-  const mensagem = req.query.mensagem;
-  if (!para || !mensagem) {
-    return res.status(400).send('Parâmetros "para" e "mensagem" são obrigatórios.');
-  }
-  if (!sock) return res.status(500).send('Bot não iniciado');
-  try {
-    await sock.sendMessage(`${para}@s.whatsapp.net`, { text: mensagem });
-    res.send('Mensagem enviada');
-  } catch (err) {
-    console.error('Erro ao enviar mensagem:', err);
-    res.status(500).send('Erro ao enviar mensagem');
-  }
-});
-
-// Endpoint para verificações via método HEAD
-app.head('/secure', (_, res) => {
-  res.status(200).end();
+  res.send(`Disparo iniciado para até ${lista.length} números`);
 });
 
 async function startBot() {
@@ -211,12 +134,9 @@ async function startBot() {
   sock = makeWASocket({ auth: state, printQRInTerminal: false });
 
   sock.ev.on('creds.update', saveCreds);
-
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
-    if (qr) {
-      qrCodeBase64 = await qrcode.toDataURL(qr);
-    }
+    if (qr) qrCodeBase64 = await qrcode.toDataURL(qr);
     if (connection === 'close') {
       const shouldReconnect = (lastDisconnect?.error instanceof Boom) &&
         (lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut);
@@ -229,11 +149,10 @@ async function startBot() {
       console.log('Conectado ao WhatsApp');
     }
   });
-
 }
 
 startBot();
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
