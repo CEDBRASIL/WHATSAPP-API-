@@ -58,7 +58,12 @@ async function iniciarSessao(sessionId) {
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       if (reason !== DisconnectReason.loggedOut) iniciarSessao(sessionId);
+
     }
+    if (connection === 'open') {
+      sockets[sessionId]?.emit('conectado');
+    }
+
   });
 }
 
