@@ -1,4 +1,4 @@
-// index.js (com WebSocket de status em tempo real)
+// index.js (com verificação de sessão ativa antes de cada disparo)
 
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -68,9 +68,18 @@ app.post('/disparo', async (req, res) => {
   if (!sock) return res.status(500).send('Bot não iniciado');
 
   let lista = numeros.slice(0, 600).map(corrigirNumero).sort(() => 0.5 - Math.random());
+  const tempoEstimadoTotal = lista.length * 97000;
+  const previsaoFinal = new Date(Date.now() + tempoEstimadoTotal);
+
+  broadcast({ event: 'inicio', total: lista.length, previsao_fim: previsaoFinal.toLocaleTimeString() });
 
   (async () => {
     for (let i = 0; i < lista.length; i++) {
+      if (!sock || !sock.user) {
+        broadcast({ event: 'erro', message: '🔌 Desconectado do WhatsApp. Disparo cancelado.' });
+        break;
+      }
+
       const numero = lista[i];
       const jid = `${numero}@s.whatsapp.net`;
       const agora = new Date();
@@ -109,7 +118,8 @@ app.post('/disparo', async (req, res) => {
         await sock.sendPresenceUpdate('paused', jid);
         await sock.sendMessage(jid, { text: msg });
 
-        broadcast({ event: 'enviado', numero, mensagem: msg, progresso: Math.round(((i + 1) / lista.length) * 100) });
+        const progresso = Math.round(((i + 1) / lista.length) * 100);
+        broadcast({ event: 'enviado', numero, mensagem: msg, progresso, estimado_fim: previsaoFinal.toLocaleTimeString() });
       } catch (err) {
         broadcast({ event: 'erro', numero, error: err.message });
       }
@@ -123,7 +133,7 @@ app.post('/disparo', async (req, res) => {
       }
     }
 
-    broadcast({ event: 'concluido' });
+    broadcast({ event: 'concluido', total: lista.length });
   })();
 
   res.send(`Disparo iniciado para até ${lista.length} números`);
