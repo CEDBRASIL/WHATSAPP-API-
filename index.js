@@ -61,17 +61,61 @@ async function iniciarSessao(sessionId) {
     }
     if (connection === 'open') {
       sockets[sessionId]?.emit('conectado');
+      sockInstances[sessionId].conectado = true;
     }
   });
 }
 
 SESSIONS.forEach(iniciarSessao);
 
+// Endpoint para listar os grupos de uma sessão específica
+app.get('/:session/grupos', async (req, res) => {
+  const session = req.params.session;
+  if (!SESSIONS.includes(session)) {
+    return res.status(400).send('Sessão inválida');
+  }
+  const sock = sockInstances[session];
+  if (!sock) return res.status(500).send('Sessão não iniciada');
+
+  try {
+    const chats = await sock.chats.all();
+    const grupos = chats.filter(chat => chat.id.endsWith('@g.us')).map(chat => ({ id: chat.id, nome: chat.name }));
+    res.json({ chip: session, total: grupos.length, grupos });
+  } catch (e) {
+    res.status(500).json({ erro: 'Erro ao listar grupos', detalhe: e.message });
+  }
+});
+
+// Endpoint para listar os membros de um grupo, por sessão
+app.get('/:session/grupo/:id/membros', async (req, res) => {
+  const session = req.params.session;
+  if (!SESSIONS.includes(session)) {
+    return res.status(400).send('Sessão inválida');
+  }
+  const sock = sockInstances[session];
+  if (!sock) return res.status(500).send('Sessão não iniciada');
+
+  try {
+    const groupId = req.params.id + '@g.us';
+    const metadata = await sock.groupMetadata(groupId);
+    const membros = metadata.participants.map(p => p.id);
+    res.json({ chip: session, grupo: metadata.subject, quantidade: membros.length, membros });
+  } catch (e) {
+    res.status(500).json({ erro: 'Erro ao obter membros', detalhe: e.message });
+  }
+});
+
 app.get('/qr', (req, res) => {
   const session = req.query.session;
   if (!session || !SESSIONS.includes(session)) {
     return res.status(400).send('Sessão inválida');
   }
+
+  const sock = sockInstances[session];
+  if (sock?.conectado) {
+    return res.status(200).send(`<!DOCTYPE html><html><head><meta charset='UTF-8'><title>QR Code - ${session}</title></head><body style='background-color:#000; color:#0f0; display:flex; align-items:center; justify-content:center; height:100vh;'><h1>${session.toUpperCase()} já está conectado!</h1></body></html>`);
+  }
+
   res.send(`
     <html>
       <head>
@@ -94,37 +138,6 @@ app.get('/qr', (req, res) => {
       </body>
     </html>
   `);
-});
-
-app.get('/grupos', async (req, res) => {
-  const session = req.query.session;
-  if (!session || !SESSIONS.includes(session)) return res.status(400).json({ erro: 'Sessão inválida' });
-  const sock = sockInstances[session];
-  if (!sock) return res.status(500).json({ erro: 'Sessão não iniciada' });
-
-  try {
-    const chats = await sock.chats.all();
-    const grupos = chats.filter(chat => chat.id.endsWith('@g.us')).map(chat => ({ id: chat.id, nome: chat.name }));
-    res.json(grupos);
-  } catch (e) {
-    res.status(500).json({ erro: 'Erro ao listar grupos', detalhe: e.message });
-  }
-});
-
-app.get('/grupo/:id/membros', async (req, res) => {
-  const session = req.query.session;
-  if (!session || !SESSIONS.includes(session)) return res.status(400).json({ erro: 'Sessão inválida' });
-  const sock = sockInstances[session];
-  if (!sock) return res.status(500).json({ erro: 'Sessão não iniciada' });
-
-  try {
-    const groupId = req.params.id + '@g.us';
-    const metadata = await sock.groupMetadata(groupId);
-    const membros = metadata.participants.map(p => p.id);
-    res.json({ grupo: metadata.subject, quantidade: membros.length, membros });
-  } catch (e) {
-    res.status(500).json({ erro: 'Erro ao obter membros', detalhe: e.message });
-  }
 });
 
 app.post('/upload', uploads.single('file'), (req, res) => {
