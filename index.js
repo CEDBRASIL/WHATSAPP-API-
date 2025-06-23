@@ -1,4 +1,4 @@
-// multi-session WhatsApp disparador com Baileys, WebSocket, frontend, upload CSV
+// multi-session WhatsApp disparador com Baileys, WebSocket, frontend, upload CSV – agora enviando nextDelay para contagem regressiva
 
 const express = require('express');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { Server } = require('socket.io');
 const qrcode = require('qrcode');
-const cors = require('cors');
+const cors = require('cors');               // <‑‑ habilita CORS
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 
@@ -20,16 +20,16 @@ const sockInstances = {};
 const uploads = multer({ dest: 'uploads/' });
 
 const app = express();
-app.use(cors()); // habilita CORS para todas as rotas
+app.use(cors());                            // <‑‑ todas as rotas Express liberadas
+app.use(express.json());
+app.use(express.static('public'));
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*"
   }
 });
-
-app.use(express.json());
-app.use(express.static('public'));
 
 function normalizarNumero(numero) {
   let num = numero.replace(/\D/g, '');
@@ -47,7 +47,6 @@ async function iniciarSessao(sessionId) {
   const { state, saveCreds } = await useMultiFileAuthState(`auth/${sessionId}`);
   const sock = makeWASocket({ auth: state, printQRInTerminal: false });
   sockInstances[sessionId] = sock;
-
   numbers[sessionId] = [];
 
   sock.ev.on('creds.update', saveCreds);
@@ -70,94 +69,58 @@ async function iniciarSessao(sessionId) {
 
 SESSIONS.forEach(iniciarSessao);
 
-// Endpoint para listar os grupos de uma sessão específica
+// ———————————————————— Rotas auxiliares ————————————————————
 app.get('/:session/grupos', async (req, res) => {
   const session = req.params.session;
-  if (!SESSIONS.includes(session)) {
-    return res.status(400).send('Sessão inválida');
-  }
+  if (!SESSIONS.includes(session)) return res.status(400).send('Sessão inválida');
   const sock = sockInstances[session];
   if (!sock) return res.status(500).send('Sessão não iniciada');
 
   try {
     const chats = await sock.chats.all();
-    const grupos = chats.filter(chat => chat.id.endsWith('@g.us')).map(chat => ({ id: chat.id, nome: chat.name }));
+    const grupos = chats.filter(c => c.id.endsWith('@g.us')).map(c => ({ id: c.id, nome: c.name }));
     res.json({ chip: session, total: grupos.length, grupos });
   } catch (e) {
     res.status(500).json({ erro: 'Erro ao listar grupos', detalhe: e.message });
   }
 });
 
-// Endpoint para listar os membros de um grupo, por sessão
 app.get('/:session/grupo/:id/membros', async (req, res) => {
   const session = req.params.session;
-  if (!SESSIONS.includes(session)) {
-    return res.status(400).send('Sessão inválida');
-  }
+  if (!SESSIONS.includes(session)) return res.status(400).send('Sessão inválida');
   const sock = sockInstances[session];
   if (!sock) return res.status(500).send('Sessão não iniciada');
 
   try {
     const groupId = req.params.id + '@g.us';
-    const metadata = await sock.groupMetadata(groupId);
-    const membros = metadata.participants.map(p => p.id);
-    res.json({ chip: session, grupo: metadata.subject, quantidade: membros.length, membros });
+    const meta = await sock.groupMetadata(groupId);
+    const membros = meta.participants.map(p => p.id);
+    res.json({ chip: session, grupo: meta.subject, quantidade: membros.length, membros });
   } catch (e) {
     res.status(500).json({ erro: 'Erro ao obter membros', detalhe: e.message });
   }
 });
 
-// Novo endpoint para consultar status da sessão
 app.get('/status', (req, res) => {
   const session = req.query.session;
-  if (!session || !SESSIONS.includes(session)) {
-    return res.status(400).json({ status: 'erro', mensagem: 'Sessão inválida' });
-  }
-
+  if (!session || !SESSIONS.includes(session)) return res.status(400).json({ status: 'erro', mensagem: 'Sessão inválida' });
   const conectado = !!sockInstances[session]?.conectado;
-  return res.json({ session, conectado });
+  res.json({ session, conectado });
 });
 
 app.get('/qr', (req, res) => {
   const session = req.query.session;
-  if (!session || !SESSIONS.includes(session)) {
-    return res.status(400).send('Sessão inválida');
-  }
-
+  if (!session || !SESSIONS.includes(session)) return res.status(400).send('Sessão inválida');
   const sock = sockInstances[session];
   if (sock?.conectado) {
-    return res.status(200).send(`<!DOCTYPE html><html><head><meta charset='UTF-8'><title>QR Code - ${session}</title></head><body style='background-color:#000; color:#0f0; display:flex; align-items:center; justify-content:center; height:100vh;'><h1>${session.toUpperCase()} já está conectado!</h1></body></html>`);
+    return res.status(200).send(`<!DOCTYPE html><html><head><meta charset='UTF-8'><title>${session}</title></head><body style='background:#000;color:#0f0;display:flex;align-items:center;justify-content:center;height:100vh'><h1>${session.toUpperCase()} já está conectado!</h1></body></html>`);
   }
-
-  res.send(`
-    <html>
-      <head>
-        <meta charset="UTF-8" />
-        <title>QR Code - ${session}</title>
-        <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-      </head>
-      <body style="background-color:#000; display:flex; justify-content:center; align-items:center; height:100vh;">
-        <div id="qr-container"></div>
-        <script>
-          const socket = io("https://whatsapp-api-uylw.onrender.com");
-          socket.emit('join', '${session}');
-          socket.on('qr', qr => {
-            document.getElementById('qr-container').innerHTML = '<img src="' + qr + '" />';
-          });
-          socket.on('conectado', () => {
-            document.getElementById('qr-container').innerHTML = '<h2 style="color:white;">Conectado!</h2>';
-          });
-        </script>
-      </body>
-    </html>
-  `);
+  res.send(`<!DOCTYPE html><html><head><meta charset='UTF-8'><title>QR ${session}</title><script src='https://cdn.socket.io/4.7.5/socket.io.min.js'></script></head><body style='background:#000;display:flex;align-items:center;justify-content:center;height:100vh'><div id='qr'></div><script>const s=io('https://whatsapp-api-uylw.onrender.com');s.emit('join','${session}');s.on('qr',q=>{document.getElementById('qr').innerHTML='<img src="'+q+'"/>';});s.on('conectado',()=>{document.getElementById('qr').innerHTML='<h2 style=\'color:white\'>Conectado!</h2>';});</script></body></html>`);
 });
 
 app.post('/upload', uploads.single('file'), (req, res) => {
   const session = req.query.session;
-  if (!session || !SESSIONS.includes(session)) {
-    return res.status(400).send('Sessão inválida');
-  }
+  if (!session || !SESSIONS.includes(session)) return res.status(400).send('Sessão inválida');
   const file = req.file;
   const content = fs.readFileSync(file.path);
   const records = parse(content, { columns: true, skip_empty_lines: true });
@@ -169,12 +132,10 @@ app.post('/upload', uploads.single('file'), (req, res) => {
 app.post('/disparos', async (req, res) => {
   const session = req.query.session;
   const { numeros, mensagens } = req.body;
-
   if (!session || !SESSIONS.includes(session)) return res.status(400).send('Sessão inválida');
-  if (!mensagens || !Array.isArray(mensagens) || mensagens.length === 0) return res.status(400).send('Mensagens obrigatórias');
-  if (!numeros || numeros.length === 0) return res.status(400).send('Números obrigatórios');
+  if (!mensagens?.length) return res.status(400).send('Mensagens obrigatórias');
+  if (!numeros?.length) return res.status(400).send('Números obrigatórios');
   if (numeros.length > 600) return res.status(400).send('O limite é 600 números');
-
   const sock = sockInstances[session];
   if (!sock) return res.status(500).send('Sessão não iniciada');
 
@@ -183,14 +144,18 @@ app.post('/disparos', async (req, res) => {
   for (let i = 0; i < numeros.length; i++) {
     const numero = normalizarNumero(numeros[i]);
     const mensagem = mensagens[Math.floor(Math.random() * mensagens.length)];
+    const delay = Math.floor(Math.random() * (125 - 60 + 1) + 60) * 1000; // próximo delay
+
     try {
       await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensagem });
-      clients[session]?.emit('status', { numero, mensagem, status: 'enviado', index: i });
+      clients[session]?.emit('status', { numero, mensagem, status: 'enviado', index: i, nextDelay: delay / 1000 });
     } catch (e) {
-      clients[session]?.emit('status', { numero, mensagem, status: 'erro', erro: e.message });
+      clients[session]?.emit('status', { numero, mensagem, status: 'erro', erro: e.message, index: i, nextDelay: delay / 1000 });
     }
-    const delay = Math.floor(Math.random() * (125 - 60 + 1) + 60) * 1000;
-    await new Promise(r => setTimeout(r, delay));
+
+    if (i < numeros.length - 1) {
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
 });
 
