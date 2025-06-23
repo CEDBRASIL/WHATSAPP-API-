@@ -58,12 +58,10 @@ async function iniciarSessao(sessionId) {
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       if (reason !== DisconnectReason.loggedOut) iniciarSessao(sessionId);
-
     }
     if (connection === 'open') {
       sockets[sessionId]?.emit('conectado');
     }
-
   });
 }
 
@@ -82,17 +80,51 @@ app.get('/qr', (req, res) => {
         <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
       </head>
       <body style="background-color:#000; display:flex; justify-content:center; align-items:center; height:100vh;">
-        <div id="qr-container" style="color:white; font-family:sans-serif">Aguardando QR...</div>
+        <div id="qr-container"></div>
         <script>
           const socket = io("https://whatsapp-api-uylw.onrender.com");
           socket.emit('join', '${session}');
           socket.on('qr', qr => {
             document.getElementById('qr-container').innerHTML = '<img src="' + qr + '" />';
           });
+          socket.on('conectado', () => {
+            document.getElementById('qr-container').innerHTML = '<h2 style="color:white;">Conectado!</h2>';
+          });
         </script>
       </body>
     </html>
   `);
+});
+
+app.get('/grupos', async (req, res) => {
+  const session = req.query.session;
+  if (!session || !SESSIONS.includes(session)) return res.status(400).json({ erro: 'Sessão inválida' });
+  const sock = sockInstances[session];
+  if (!sock) return res.status(500).json({ erro: 'Sessão não iniciada' });
+
+  try {
+    const chats = await sock.chats.all();
+    const grupos = chats.filter(chat => chat.id.endsWith('@g.us')).map(chat => ({ id: chat.id, nome: chat.name }));
+    res.json(grupos);
+  } catch (e) {
+    res.status(500).json({ erro: 'Erro ao listar grupos', detalhe: e.message });
+  }
+});
+
+app.get('/grupo/:id/membros', async (req, res) => {
+  const session = req.query.session;
+  if (!session || !SESSIONS.includes(session)) return res.status(400).json({ erro: 'Sessão inválida' });
+  const sock = sockInstances[session];
+  if (!sock) return res.status(500).json({ erro: 'Sessão não iniciada' });
+
+  try {
+    const groupId = req.params.id + '@g.us';
+    const metadata = await sock.groupMetadata(groupId);
+    const membros = metadata.participants.map(p => p.id);
+    res.json({ grupo: metadata.subject, quantidade: membros.length, membros });
+  } catch (e) {
+    res.status(500).json({ erro: 'Erro ao obter membros', detalhe: e.message });
+  }
 });
 
 app.post('/upload', uploads.single('file'), (req, res) => {
