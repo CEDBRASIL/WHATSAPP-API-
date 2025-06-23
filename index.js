@@ -105,6 +105,17 @@ app.get('/:session/grupo/:id/membros', async (req, res) => {
   }
 });
 
+// Novo endpoint para consultar status da sessão
+app.get('/status', (req, res) => {
+  const session = req.query.session;
+  if (!session || !SESSIONS.includes(session)) {
+    return res.status(400).json({ status: 'erro', mensagem: 'Sessão inválida' });
+  }
+
+  const conectado = !!sockInstances[session]?.conectado;
+  return res.json({ session, conectado });
+});
+
 app.get('/qr', (req, res) => {
   const session = req.query.session;
   if (!session || !SESSIONS.includes(session)) {
