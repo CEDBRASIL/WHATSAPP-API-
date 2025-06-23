@@ -8,6 +8,7 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { Server } = require('socket.io');
 const qrcode = require('qrcode');
+const cors = require('cors');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 
@@ -19,6 +20,7 @@ const sockInstances = {};
 const uploads = multer({ dest: 'uploads/' });
 
 const app = express();
+app.use(cors()); // habilita CORS para todas as rotas
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
